@@ -1,0 +1,9 @@
+numpy
+Pillow
+pyquaternion
+html-testRunner
+setuptools
+natsort
+opencv-python==4.2.0.32
+scipy
+open3d
