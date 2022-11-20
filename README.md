@@ -1,4 +1,4 @@
-# VLMbench: A Compositional Benchmark for Vision-and-Language Manipulation
+# Action-Centric Vision-and-Language Manipulation Using Perceiver-Actor on VLMBench
 
 ![task image missing](readme_files/teaser.svg)
 
