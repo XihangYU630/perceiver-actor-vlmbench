@@ -31,6 +31,8 @@ class VLM_dataset(Dataset):
         self.train_tasks = train_tasks
         self.read_lists()
         self.use_fail_cases = use_fail_cases
+
+        
         if train_tasks is not None:
             self.episode_list = []
             for t in train_tasks:
@@ -313,7 +315,7 @@ class VLM_dataset(Dataset):
     def __len__(self):
         return len(self.episode_list)
 
-class VLM_Waypoint_dataset(VLM_dataset):
+class VLM_Waypoint_training_dataset(VLM_dataset):
     def __init__(self, root, setd, img_size=(360, 360), unused_camera_list=['left_shoulder', 'right_shoulder', 'overhead', 'wrist'], preprocess=True, use_fail_cases=True, sample_method="waypoints", train_tasks=None, args=None, mood="diffuser"):
         sample_method="waypoints"
         super().__init__(root, setd, img_size, unused_camera_list, preprocess, use_fail_cases, sample_method, train_tasks, args, mood)
@@ -337,7 +339,8 @@ class VLM_Waypoint_dataset(VLM_dataset):
                         if i+1<len(waypoint_inds):
                             all_episode_wp_pairs[key_t].append([episode, i, wp, waypoint_inds[i+1]])
                         else:
-                            all_episode_wp_pairs[key_t].append([episode, i, wp, len(waypoint_inds)])
+                            k = len(demo_temple)
+                            all_episode_wp_pairs[key_t].append([episode, i, wp, len(demo_temple)-1])
             with open(waypoint_list_path,'wb') as f:
                 pickle.dump(all_episode_wp_pairs, f)
         
@@ -361,7 +364,7 @@ class VLM_Waypoint_dataset(VLM_dataset):
         fail_cases = 'fail_cases' in str(episode)
         episode_name = episode.name
         variation_number = int(variation_path.name.replace('variation',''))
-        demos = get_stored_demos(1, False, self.dataset_path, variation_number, 
+        demos = get_stored_demos(1, False, self.dataset_path, variation_number,
                                 task_name, self.obs_config, episode_name, fail_cases, [current_idx])
         output_dict = self.get_perceiver_gt(demos[0], current_idx, target_idx)
         output_dict['episode'] = str(episode)
@@ -397,7 +400,7 @@ class VLM_Waypoint_dataset(VLM_dataset):
         bounds = np.array(self.args.bounds)
         trans_indicies, rot_grip_indicies = [], []
 
-        observation = data._observations[currend_idx+1]
+        observation = data._observations[target_idx]
         quat = observation.gripper_pose[3:]
         if quat[-1]<0:
             quat = -quat

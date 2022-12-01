@@ -13,7 +13,7 @@ from utils.helper import visualise_voxel
 
 class Arguments:
     def __init__(self):
-        self.data_dir = "/media/xihang/761C73981C7351DB/vlmbench/data"
+        self.data_dir = "/home/xihang/Data/vlm_bench/data"
         self.img_size = (360, 360)
         self.unused_camera_list = [None]
         self.preprocess = False
@@ -58,8 +58,6 @@ if __name__=="__main__":
         drop_last=True, persistent_workers=True)
     data_iterator = iter(data_loader)
     data = next(data_iterator)
-    data = next(data_iterator)
-    data = next(data_iterator)
     print("data: ", data.keys())
     # data = {k: v.to(device) for k, v in data.items() if type(v) == torch.Tensor}
 
@@ -79,5 +77,5 @@ if __name__=="__main__":
                                vis_gt_coord[0],
                                voxel_size=0.045,
                                rotation_amount=np.deg2rad(rotation_amount))
-    cv2.imwrite('point3.png', cv2.cvtColor(rendered_img, cv2.COLOR_BGR2RGB))
+    cv2.imwrite('point4.png', cv2.cvtColor(rendered_img, cv2.COLOR_BGR2RGB))
     a = 1

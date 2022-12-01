@@ -1,10 +1,14 @@
 
 import torch
 from perceiver_io import PerceiverIO
-from diffuser.Dataloader import VLM_Waypoint_dataset
+from diffuser.Dataloader import VLM_Waypoint_training_dataset
 from Q_function import QFunction
 from PerceiverActorAgent import PerceiverActorAgent
 import time
+from utils.helper import visualise_voxel, discrete_euler_to_quaternion, get_gripper_render_pose
+import numpy as np
+import matplotlib.pyplot as plt
+import cv2
 
 
 # constants
@@ -30,7 +34,7 @@ NUM_TEST = 2 # episodes to evaluate on
 
 class Arguments:
     def __init__(self):
-        self.data_dir = "/media/xihang/761C73981C7351DB/vlmbench/data"
+        self.data_dir = "/media/xihang/498ml/vlm_bench/data"
         self.img_size = (360, 360)
         self.unused_camera_list = [None]
         self.preprocess = False
@@ -109,70 +113,128 @@ def main():
     peract_agent.build(training=True, device=device)
 
     LOG_FREQ = 50
-    TRAINING_ITERATIONS = 2400
+    training_epoch = 2
 
 
 
     start_time = time.time()
 
-    training_dataset = VLM_Waypoint_dataset(args.data_dir, 'train', img_size=args.img_size, unused_camera_list = args.unused_camera_list, preprocess = args.preprocess, 
-                    use_fail_cases = args.use_fail_cases, sample_method = args.sample_method, train_tasks=args.train_tasks, mood="perceiver", args=args)
-    train_data_loader = torch.utils.data.DataLoader(
-        training_dataset, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.workers, pin_memory=args.pin_memory, sampler=None, 
-        drop_last=True, persistent_workers=True)
-    train_data_iter = iter(train_data_loader)
+    # i=0 ## iter
+    # for epoch in range(training_epoch):
+    #     training_dataset = VLM_Waypoint_training_dataset(args.data_dir, 'train', img_size=args.img_size, unused_camera_list = args.unused_camera_list, preprocess = args.preprocess, 
+    #                     use_fail_cases = args.use_fail_cases, sample_method = args.sample_method, train_tasks=args.train_tasks, mood="perceiver", args=args)
+    #     train_data_loader = torch.utils.data.DataLoader(
+    #         training_dataset, batch_size=args.batch_size, shuffle=True,
+    #         num_workers=args.workers, pin_memory=args.pin_memory, sampler=None, 
+    #         drop_last=True, persistent_workers=True)        
+    #     for batch in train_data_loader:
 
-    result = len(list(train_data_iter))
+    #         batch_partial_device = {k: v.to(device) for k, v in batch.items() if type(v) == torch.Tensor}
+    #         # print("batch: ", batch.keys())
+    #         update_dict = peract_agent.update(i, batch, batch_partial_device)
 
-    for iteration in range(TRAINING_ITERATIONS):
-        batch = next(train_data_iter)
+    #         if i % LOG_FREQ == 0:
+    #             elapsed_time = (time.time() - start_time) / 60.0
+    #             print("Total Loss: %f | Elapsed Time: %f mins" % (update_dict['total_loss'], elapsed_time))
 
-        batch_partial_device = {k: v.to(device) for k, v in batch.items() if type(v) == torch.Tensor}
-        # print("batch: ", batch.keys())
-        update_dict = peract_agent.update(iteration, batch, batch_partial_device)
-
-        if iteration % LOG_FREQ == 0:
-            elapsed_time = (time.time() - start_time) / 60.0
-            print("Total Loss: %f | Elapsed Time: %f mins" % (update_dict['total_loss'], elapsed_time))
+    #         del batch_partial_device
+    #         i+=1
 
 
     """ Inference and Visualization """
 
 
-    # test_dataset = VLM_Waypoint_dataset(args.data_dir, 'test', img_size=args.img_size, unused_camera_list = args.unused_camera_list, preprocess = args.preprocess, 
+    test_dataset = VLM_Waypoint_training_dataset(args.data_dir, 'test', img_size=args.img_size, unused_camera_list = args.unused_camera_list, preprocess = args.preprocess, 
+                    use_fail_cases = args.use_fail_cases, sample_method = args.sample_method, train_tasks=args.train_tasks, mood="perceiver", args=args)
+    test_data_loader = torch.utils.data.DataLoader(
+        test_dataset, batch_size=args.batch_size, shuffle=True,
+        num_workers=args.workers, pin_memory=args.pin_memory, sampler=None, 
+        drop_last=True, persistent_workers=True)
+    test_data_iter = iter(test_data_loader)
+
+    batch = next(test_data_iter)
+    # lang_goal = batch['lang_goal'][0][0][0]
+    lang_goal = batch['lang_goal_embs']
+    batch_partial_device = {k: v.to(device) for k, v in batch.items() if type(v) == torch.Tensor}
+    update_dict = peract_agent.update(1, batch, batch_partial_device, backprop=False)
+
+    # things to visualize
+    vis_voxel_grid = update_dict['voxel_grid'][0].detach().cpu().numpy()
+    vis_trans_q = update_dict['q_trans'][0].detach().cpu().numpy()
+    vis_trans_coord = update_dict['pred_action']['trans'][0].detach().cpu().numpy()
+    vis_gt_coord = update_dict['expert_action']['action_trans'][0].detach().cpu().numpy()
+
+    # discrete to continuous
+    continuous_trans = update_dict['pred_action']['continuous_trans'][0].detach().cpu().numpy()
+    continuous_quat = discrete_euler_to_quaternion(update_dict['pred_action']['rot_and_grip'][0][:3].detach().cpu().numpy(),
+                                                resolution=peract_agent._rotation_resolution)
+    gripper_open = bool(update_dict['pred_action']['rot_and_grip'][0][-1].detach().cpu().numpy())
+    ignore_collision = bool(update_dict['pred_action']['collision'][0][0].detach().cpu().numpy())
+
+    # gripper visualization pose
+    voxel_size = 0.045
+    voxel_scale = voxel_size * 100
+    gripper_pose_mat = get_gripper_render_pose(voxel_scale, 
+                                            SCENE_BOUNDS[:3],
+                                            continuous_trans,
+                                            continuous_quat)
+
+    show_expert_action = True  #@param {type:"boolean"}
+    show_q_values = True  #@param {type:"boolean"}
+    render_gripper = True  #@param {type:"boolean"}
+    rotation_amount = 90 #@param {type:"slider", min:-180, max:180, step:5}
+
+    rendered_img = visualise_voxel(vis_voxel_grid,
+                                vis_trans_q if show_q_values else None,
+                                vis_trans_coord,
+                                vis_gt_coord if show_expert_action else None,
+                                voxel_size=voxel_size,
+                                rotation_amount=np.deg2rad(rotation_amount),
+                                render_gripper=render_gripper,
+                                gripper_pose=gripper_pose_mat,
+                                gripper_mesh_scale=voxel_scale)
+
+    fig = plt.figure(figsize=(15, 15))
+    cv2.imwrite('after_training.png', cv2.cvtColor(rendered_img, cv2.COLOR_BGR2RGB))
+    
+
+    print(f"Lang Goal: {lang_goal}")
+
+
+
+
+
+
+    #     ## Read waypoints data
+    # dataset = VLM_Waypoint_dataset(args.data_dir, 'train', img_size=args.img_size, unused_camera_list = args.unused_camera_list, preprocess = args.preprocess, 
     #                 use_fail_cases = args.use_fail_cases, sample_method = args.sample_method, train_tasks=args.train_tasks, mood="perceiver", args=args)
-    # test_data_loader = torch.utils.data.DataLoader(
-    #     test_dataset, batch_size=args.batch_size, shuffle=True,
+    # data_loader = torch.utils.data.DataLoader(
+    #     dataset, batch_size=args.batch_size, shuffle=True,
     #     num_workers=args.workers, pin_memory=args.pin_memory, sampler=None, 
     #     drop_last=True, persistent_workers=True)
-    # test_data_iter = iter(test_data_loader)
+    # data_iterator = iter(data_loader)
+    # data = next(data_iterator)
+    # print("data: ", data.keys())
+    # # data = {k: v.to(device) for k, v in data.items() if type(v) == torch.Tensor}
 
-    # batch = next(test_data_iter)
-    # lang_goal = batch['lang_goal'][0][0][0]
-    # batch = {k: v.to(device) for k, v in batch.items() if type(v) == torch.Tensor}
-    # update_dict = peract_agent.update(iteration, batch, backprop=False)
-
-    # # things to visualize
-    # vis_voxel_grid = update_dict['voxel_grid'][0].detach().cpu().numpy()
-    # vis_trans_q = update_dict['q_trans'][0].detach().cpu().numpy()
-    # vis_trans_coord = update_dict['pred_action']['trans'][0].detach().cpu().numpy()
-    # vis_gt_coord = update_dict['expert_action']['action_trans'][0].detach().cpu().numpy()
-
-    # # discrete to continuous
-    # continuous_trans = update_dict['pred_action']['continuous_trans'][0].detach().cpu().numpy()
-    # continuous_quat = discrete_euler_to_quaternion(update_dict['pred_action']['rot_and_grip'][0][:3].detach().cpu().numpy(),
-    #                                             resolution=peract_agent._rotation_resolution)
-    # gripper_open = bool(update_dict['pred_action']['rot_and_grip'][0][-1].detach().cpu().numpy())
-    # ignore_collision = bool(update_dict['pred_action']['collision'][0][0].detach().cpu().numpy())
-
-    # # gripper visualization pose
-    # voxel_size = 0.045
-    # voxel_scale = voxel_size * 100
-    # gripper_pose_mat = get_gripper_render_pose(voxel_scale, 
-    #                                         SCENE_BOUNDS[:3],
-    #                                         continuous_trans,
-    #                                         continuous_quat)
+    # ## flattened point cloud and img already in the dataset
+    # bounds = torch.tensor(SCENE_BOUNDS, device=device).unsqueeze(0)
+    # pcd_flat = data['flat_rgb_pcd'][...,3:6].to(device)
+    # flat_imag_features = data['flat_rgb_pcd'][...,:3].to(device)
+    # voxel_grid = vox_grid.coords_to_bounding_voxel_grid(pcd_flat, 
+    #                                                 coord_features=flat_imag_features, 
+    #                                                 coord_bounds=bounds)
+    # vis_voxel_grid = voxel_grid.permute(0, 4, 1, 2, 3).detach().cpu().numpy()
+    # rotation_amount = 35
+    # vis_gt_coord = data['trans_indicies'][0].int().numpy()
+    # rendered_img = visualise_voxel(vis_voxel_grid[0],
+    #                            None,
+    #                            None,
+    #                            vis_gt_coord[0],
+    #                            voxel_size=0.045,
+    #                            rotation_amount=np.deg2rad(rotation_amount))
+    # cv2.imwrite('point4.png', cv2.cvtColor(rendered_img, cv2.COLOR_BGR2RGB))
+    # a = 1
 
 
 if __name__ == "__main__":

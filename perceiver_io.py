@@ -6,7 +6,7 @@ from einops.layers.torch import Reduce
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
-from diffuser.Dataloader import VLM_Waypoint_dataset
+from diffuser.Dataloader import VLM_Waypoint_training_dataset
 from utils.voxelization import VoxelGrid
 from utils.helper import visualise_voxel
 import numpy as np
