@@ -246,6 +246,7 @@ class VLM_dataset(Dataset):
         elif self.sample_method.isnumeric():
             obs_select_inds = obs_select_inds[0:int(self.sample_numbers)]
         return obs_select_inds
+
     @staticmethod
     def normalize(joints):
         joint_intervals = np.array([[-2.8973000049591064, 5.794600009918213], 
@@ -319,7 +320,7 @@ class VLM_Waypoint_training_dataset(VLM_dataset):
     def __init__(self, root, setd, img_size=(360, 360), unused_camera_list=['left_shoulder', 'right_shoulder', 'overhead', 'wrist'], preprocess=True, use_fail_cases=True, sample_method="waypoints", train_tasks=None, args=None, mood="diffuser"):
         sample_method="waypoints"
         super().__init__(root, setd, img_size, unused_camera_list, preprocess, use_fail_cases, sample_method, train_tasks, args, mood)
-        self.split_episode_to_waypoints(force_resample=False)
+        # self.split_episode_to_waypoints(force_resample=False)
 
     def split_episode_to_waypoints(self, force_resample=False):
         waypoint_list_path = self.dataset_path / '{}_waypoints.pkl'.format(self.setd)
@@ -424,6 +425,150 @@ class VLM_Waypoint_training_dataset(VLM_dataset):
             "rot_grip_indicies":rot_grip_indicies,
             "lang_goal_embs": data.high_level_instructions,
             "low_dim_state": low_dim_state
+        }
+
+        return output_dict
+
+
+
+class VLM_Waypoint_testing_dataset(VLM_dataset):
+    def __init__(self, root, setd, img_size=(360, 360), unused_camera_list=['left_shoulder', 'right_shoulder', 'overhead', 'wrist'], preprocess=True, use_fail_cases=True, sample_method="waypoints", train_tasks=None, args=None, mood="diffuser"):
+        sample_method="waypoints"
+        super().__init__(root, setd, img_size, unused_camera_list, preprocess, use_fail_cases, sample_method, train_tasks, args, mood)
+        self.split_episode_to_waypoints_testing(force_resample=False)
+
+    def split_episode_to_waypoints_testing(self, force_resample=False):
+        waypoint_list_path = self.dataset_path / '{}_waypoints.pkl'.format(self.setd)
+        if waypoint_list_path.is_file() and not force_resample:
+            with open(waypoint_list_path,'rb') as f:
+                all_episode_wp_pairs = pickle.load(f)
+        else:
+            all_episode_wp_pairs = {}
+            for key_t, value_t in self.task_list.items():
+                all_episode_wp_pairs[key_t] = []
+                for episode in value_t['success']:
+                    low_dim_obs = self.dataset_path/episode/"low_dim_obs.pkl"
+                    with open(low_dim_obs, 'rb') as f:
+                        demo_temple = pickle.load(f)
+                    waypoint_inds = self.sample_steps_testing(demo_temple)
+                    for i, wp in enumerate(waypoint_inds):
+                        if i+1<len(waypoint_inds):
+                            all_episode_wp_pairs[key_t].append([episode, i, wp, waypoint_inds[i+1]])
+                        else:
+                            k = len(demo_temple)
+                            all_episode_wp_pairs[key_t].append([episode, i, wp, len(demo_temple)-1])
+            with open(waypoint_list_path,'wb') as f:
+                pickle.dump(all_episode_wp_pairs, f)
+        
+        self.all_waypoints = []
+        for t in self.train_tasks:
+            for n in all_episode_wp_pairs:
+                if t in n:
+                    self.all_waypoints += all_episode_wp_pairs[n]
+
+        self.all_waypoints_testing = []
+        for i in range(int(len(self.all_waypoints)/3)):
+            tmp_sequence = []
+            tmp_sequence.append(self.all_waypoints[3*i])
+            tmp_sequence.append(self.all_waypoints[3*i+1])
+            tmp_sequence.append(self.all_waypoints[3*i+2])
+            self.all_waypoints_testing.append(tmp_sequence)
+
+        return None
+
+    def sample_steps_testing(self, demo_temple):
+        sequence_length = len(demo_temple._observations)
+        obs_select_inds = np.arange(sequence_length)
+
+        if self.sample_method == 'waypoints':
+            obs_select_inds = [0]
+            previous_waypoint="waypoint0"
+            all_waypoints = [previous_waypoint]
+            for i, obs in enumerate(demo_temple._observations):
+                if obs.current_waypoint_name == previous_waypoint:
+                    continue
+                else:
+                    previous_waypoint = obs.current_waypoint_name
+                    all_waypoints.append(previous_waypoint)
+                    obs_select_inds.append(i)
+        return obs_select_inds
+    
+    def __len__(self):
+        return len(self.all_waypoints)
+    
+    def __getitem__(self, index):
+        if index in self.invalid_episodes:
+            index = sample(self.valid_episodes, 1)[0]
+        episode, wp_number, current_idx, target_idx = self.all_waypoints[index] ## what is all_waypoints
+        variation_path = episode.parents[1]
+        task_name = episode.parents[2]
+        fail_cases = 'fail_cases' in str(episode)
+        episode_name = episode.name
+        variation_number = int(variation_path.name.replace('variation',''))
+        demos = get_stored_demos(1, False, self.dataset_path, variation_number,
+                                task_name, self.obs_config, episode_name, fail_cases, [current_idx])
+        output_dict = self.get_perceiver_gt(demos[0], episode, wp_number, current_idx, target_idx)
+        output_dict['episode'] = str(episode)
+        output_dict['frame'] = current_idx
+        if output_dict['valid']:
+            self.valid_episodes.add(index)
+        else:
+            self.invalid_episodes.add(index)
+            if len(self.valid_episodes) == 0:
+                other_indexs = list(set(range(self.__len__())) - self.invalid_episodes)
+                valid_index = sample(other_indexs, 1)[0]
+            else:
+                valid_index = sample(self.valid_episodes, 1)[0]
+            output_dict = self.__getitem__(valid_index)
+
+        return output_dict
+
+    def _norm_rgb(self, x):
+        return (x.astype(np.float32) / 255.0) * 2.0 - 1.0
+
+
+
+    def get_perceiver_gt(self, data, episode, wp_number, currend_idx, target_idx):
+        observation = data._observations[currend_idx]
+        all_views = []
+        for view in self.views:
+            rgb = getattr(observation, f"{view}_rgb")
+            pcd = getattr(observation, f"{view}_point_cloud").astype(np.float32)
+            rgb = self._norm_rgb(rgb)
+            all_views.append(np.concatenate((rgb, pcd), axis=-1).reshape((-1, 6)))
+        all_views = np.concatenate(all_views, axis=0)
+
+        bounds = np.array(self.args.bounds)
+        trans_indicies, rot_grip_indicies = [], []
+
+        observation = data._observations[target_idx]
+        quat = observation.gripper_pose[3:]
+        if quat[-1]<0:
+            quat = -quat
+        disc_rot = helper.quaternion_to_discrete_euler(quat, self.args.rotation_resolution)
+        attention_coordinate = observation.gripper_pose[:3]
+        index = helper.point_to_voxel_index(attention_coordinate, self.args.voxel_size, bounds)
+        trans_indicies.append(index)
+        disc_rot = disc_rot.tolist()
+        disc_rot.extend([int(observation.gripper_open)])
+        rot_grip_indicies.append(np.array(disc_rot))
+
+        low_dim_state = np.array([[observation.gripper_open, observation.gripper_joint_positions[0], observation.gripper_joint_positions[0], currend_idx/len(data._observations)]])
+        low_dim_state = torch.from_numpy(low_dim_state).float()
+
+        lang_goal_embs = data.high_level_instructions
+        
+        output_dict = {
+            "flat_rgb_pcd":all_views,
+            "valid":True,
+            "trans_indicies":trans_indicies,
+            "rot_grip_indicies":rot_grip_indicies,
+            "lang_goal_embs": data.high_level_instructions,
+            "low_dim_state": low_dim_state,
+            "episode": episode,
+            "wp_number": wp_number,
+            "currend_idx": currend_idx,
+            "target_idx": target_idx
         }
 
         return output_dict

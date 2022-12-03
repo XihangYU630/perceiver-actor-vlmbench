@@ -1,7 +1,7 @@
 
 import torch
 from perceiver_io import PerceiverIO
-from diffuser.Dataloader import VLM_Waypoint_training_dataset
+from diffuser.Dataloader import VLM_Waypoint_training_dataset, VLM_Waypoint_testing_dataset
 from Q_function import QFunction
 from PerceiverActorAgent import PerceiverActorAgent
 import time
@@ -40,7 +40,7 @@ class Arguments:
         self.preprocess = False
         self.use_fail_cases = False
         self.sample_method = 'waypoints'
-        self.train_tasks = ['door_complex']
+        self.train_tasks = ['drawer']
 
         self.batch_size = 1
         self.workers = 4
@@ -144,61 +144,63 @@ def main():
     """ Inference and Visualization """
 
 
-    test_dataset = VLM_Waypoint_training_dataset(args.data_dir, 'test', img_size=args.img_size, unused_camera_list = args.unused_camera_list, preprocess = args.preprocess, 
+    test_dataset = VLM_Waypoint_testing_dataset(args.data_dir, 'test', img_size=args.img_size, unused_camera_list = args.unused_camera_list, preprocess = args.preprocess, 
                     use_fail_cases = args.use_fail_cases, sample_method = args.sample_method, train_tasks=args.train_tasks, mood="perceiver", args=args)
     test_data_loader = torch.utils.data.DataLoader(
-        test_dataset, batch_size=args.batch_size, shuffle=True,
+        test_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=args.pin_memory, sampler=None, 
         drop_last=True, persistent_workers=True)
     test_data_iter = iter(test_data_loader)
 
-    batch = next(test_data_iter)
-    # lang_goal = batch['lang_goal'][0][0][0]
-    lang_goal = batch['lang_goal_embs']
-    batch_partial_device = {k: v.to(device) for k, v in batch.items() if type(v) == torch.Tensor}
-    update_dict = peract_agent.update(1, batch, batch_partial_device, backprop=False)
+    for i in range(int(len(test_data_iter)/3)):
 
-    # things to visualize
-    vis_voxel_grid = update_dict['voxel_grid'][0].detach().cpu().numpy()
-    vis_trans_q = update_dict['q_trans'][0].detach().cpu().numpy()
-    vis_trans_coord = update_dict['pred_action']['trans'][0].detach().cpu().numpy()
-    vis_gt_coord = update_dict['expert_action']['action_trans'][0].detach().cpu().numpy()
+        for j in range(3):
+            batch = next(test_data_iter)
 
-    # discrete to continuous
-    continuous_trans = update_dict['pred_action']['continuous_trans'][0].detach().cpu().numpy()
-    continuous_quat = discrete_euler_to_quaternion(update_dict['pred_action']['rot_and_grip'][0][:3].detach().cpu().numpy(),
-                                                resolution=peract_agent._rotation_resolution)
-    gripper_open = bool(update_dict['pred_action']['rot_and_grip'][0][-1].detach().cpu().numpy())
-    ignore_collision = bool(update_dict['pred_action']['collision'][0][0].detach().cpu().numpy())
+            lang_goal = batch['lang_goal_embs']
+            batch_partial_device = {k: v.to(device) for k, v in batch.items() if type(v) == torch.Tensor}
+            update_dict = peract_agent.update(1, batch, batch_partial_device, backprop=False)
 
-    # gripper visualization pose
-    voxel_size = 0.045
-    voxel_scale = voxel_size * 100
-    gripper_pose_mat = get_gripper_render_pose(voxel_scale, 
-                                            SCENE_BOUNDS[:3],
-                                            continuous_trans,
-                                            continuous_quat)
+            # things to visualize
+            vis_voxel_grid = update_dict['voxel_grid'][0].detach().cpu().numpy()
+            vis_trans_q = update_dict['q_trans'][0].detach().cpu().numpy()
+            vis_trans_coord = update_dict['pred_action']['trans'][0].detach().cpu().numpy()
+            vis_gt_coord = update_dict['expert_action']['action_trans'][0].detach().cpu().numpy()
 
-    show_expert_action = True  #@param {type:"boolean"}
-    show_q_values = True  #@param {type:"boolean"}
-    render_gripper = True  #@param {type:"boolean"}
-    rotation_amount = 90 #@param {type:"slider", min:-180, max:180, step:5}
+            # discrete to continuous
+            continuous_trans = update_dict['pred_action']['continuous_trans'][0].detach().cpu().numpy()
+            continuous_quat = discrete_euler_to_quaternion(update_dict['pred_action']['rot_and_grip'][0][:3].detach().cpu().numpy(),
+                                                        resolution=peract_agent._rotation_resolution)
+            gripper_open = bool(update_dict['pred_action']['rot_and_grip'][0][-1].detach().cpu().numpy())
+            ignore_collision = bool(update_dict['pred_action']['collision'][0][0].detach().cpu().numpy())
 
-    rendered_img = visualise_voxel(vis_voxel_grid,
-                                vis_trans_q if show_q_values else None,
-                                vis_trans_coord,
-                                vis_gt_coord if show_expert_action else None,
-                                voxel_size=voxel_size,
-                                rotation_amount=np.deg2rad(rotation_amount),
-                                render_gripper=render_gripper,
-                                gripper_pose=gripper_pose_mat,
-                                gripper_mesh_scale=voxel_scale)
+            # gripper visualization pose
+            voxel_size = 0.045
+            voxel_scale = voxel_size * 100
+            gripper_pose_mat = get_gripper_render_pose(voxel_scale, 
+                                                    SCENE_BOUNDS[:3],
+                                                    continuous_trans,
+                                                    continuous_quat)
 
-    fig = plt.figure(figsize=(15, 15))
-    cv2.imwrite('after_training.png', cv2.cvtColor(rendered_img, cv2.COLOR_BGR2RGB))
-    
+            show_expert_action = True  #@param {type:"boolean"}
+            show_q_values = True  #@param {type:"boolean"}
+            render_gripper = True  #@param {type:"boolean"}
+            rotation_amount = 90 #@param {type:"slider", min:-180, max:180, step:5}
 
-    print(f"Lang Goal: {lang_goal}")
+            rendered_img = visualise_voxel(vis_voxel_grid,
+                                        vis_trans_q if show_q_values else None,
+                                        vis_trans_coord,
+                                        vis_gt_coord if show_expert_action else None,
+                                        voxel_size=voxel_size,
+                                        rotation_amount=np.deg2rad(rotation_amount),
+                                        render_gripper=render_gripper,
+                                        gripper_pose=gripper_pose_mat,
+                                        gripper_mesh_scale=voxel_scale)
+
+            fig = plt.figure(figsize=(15, 15))
+            name = 'after_training_' + str(j) + '.png'
+            cv2.imwrite(name, cv2.cvtColor(rendered_img, cv2.COLOR_BGR2RGB))
+        print(f"Lang Goal: {lang_goal}")
 
 
 
