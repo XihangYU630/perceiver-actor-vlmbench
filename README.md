@@ -1,6 +1,6 @@
 # Action-Centric Vision-and-Language Manipulation Using Perceiver-Actor on VLMbench
 
-<img src="readme_files/cover.png" width="100" height="100">
+<img src="readme_files/cover.png" width="500" height="300">
 
 ![task image missing](readme_files/cover.png)
 
